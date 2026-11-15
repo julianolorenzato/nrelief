@@ -15,6 +15,9 @@ dependencies = [
     "open3d>=0.20.0",
 ]
 
+[tool.ruff]
+line-length = 80
+
 [project.scripts]
 nrelief = "nrelief:main"
 

@@ -1,3 +1,5 @@
+import pathlib
+
 import numpy as np
 import slangpy as spy
 
@@ -26,16 +28,42 @@ def perspective(fov_y, aspect, near=0.05, far=100.0):
     return m
 
 
-class Viewer(spy.AppWindow):
-    def __init__(self, app, obj_path, weights_path):
-        super().__init__(app, width=800, height=600, title="NRelief", resizable=False)
-        self.obj_path = obj_path
-        self.weights_path = weights_path
+def camera_mvp(yaw, pitch, dist, aspect):
+    eye = dist * np.array(
+        [
+            np.cos(pitch) * np.sin(yaw),
+            np.sin(pitch),
+            np.cos(pitch) * np.cos(yaw),
+        ],
+        dtype=np.float32,
+    )
+    return perspective(np.radians(50), aspect) @ look_at(
+        eye, np.zeros(3, np.float32)
+    )
 
-        self.renderer = None  # created on first frame, once the surface format is known
-        self.depth = None
+
+SURFACE_FORMAT = spy.Format.bgra8_unorm_srgb
+
+
+class Viewer(spy.AppWindow):
+    def __init__(
+        self, app: spy.App, obj_path: pathlib.Path, weights_path: pathlib.Path
+    ):
+        super().__init__(
+            app,
+            width=800,
+            height=600,
+            title="NRelief",
+            resizable=False,
+            surface_format=SURFACE_FORMAT,
+        )
+
+        self.renderer = MeshRenderer(
+            self.device, obj_path, weights_path, SURFACE_FORMAT
+        )
+        self.depth: spy.Texture | None = None
         self.yaw, self.pitch, self.dist = 0.6, 0.4, 2.5
-        self.dragging = False
+        self.dragging: bool = False
         self.last: tuple[float, float] | None = None
 
     def on_mouse_event(self, event: spy.MouseEvent) -> None:
@@ -49,14 +77,12 @@ class Viewer(spy.AppWindow):
             self.yaw -= dx * 0.01
             self.pitch = float(np.clip(self.pitch + dy * 0.01, -1.5, 1.5))
         elif event.is_scroll():
-            self.dist = float(np.clip(self.dist * (1 - event.scroll.y * 0.1), 0.5, 20))
+            self.dist = float(
+                np.clip(self.dist * (1 - event.scroll.y * 0.1), 0.5, 20)
+            )
 
     def render(self, render_context: spy.AppWindow.RenderContext) -> None:
         surf = render_context.surface_texture
-        if self.renderer is None:
-            self.renderer = MeshRenderer(
-                self.device, self.obj_path, self.weights_path, surf.format
-            )
         if (
             self.depth is None
             or self.depth.width != surf.width
@@ -68,19 +94,18 @@ class Viewer(spy.AppWindow):
                 height=surf.height,
                 usage=spy.TextureUsage.depth_stencil,
             )
-        mvp = camera_mvp(self.yaw, self.pitch, self.dist, surf.width / surf.height)
-        self.renderer.draw(render_context.command_encoder, surf, self.depth, mvp)
+        mvp = camera_mvp(
+            self.yaw, self.pitch, self.dist, surf.width / surf.height
+        )
+        self.renderer.draw(
+            render_context.command_encoder, surf, self.depth, mvp
+        )
 
 
-def camera_mvp(yaw, pitch, dist, aspect):
-    eye = dist * np.array(
-        [np.cos(pitch) * np.sin(yaw), np.sin(pitch), np.cos(pitch) * np.cos(yaw)],
-        dtype=np.float32,
-    )
-    return perspective(np.radians(50), aspect) @ look_at(eye, np.zeros(3, np.float32))
-
-
-def view(obj_path="assets/cube.obj", weights_path="weights.bin"):
+def view(
+    obj_path=pathlib.Path("assets/cube.obj"),
+    weights_path=pathlib.Path("weights.bin"),
+):
     app = spy.App()
     _viewer = Viewer(
         app, obj_path, weights_path
