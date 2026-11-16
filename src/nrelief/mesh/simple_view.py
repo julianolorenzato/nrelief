@@ -1,9 +1,11 @@
-import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import open3d as o3d
 import slangpy as spy
+
+from .camera import OrbitCamera
 
 TITLE = "Neural Relief Mapping"
 SHADERS_DIR = Path(__file__).parents[3] / "shaders"
@@ -14,44 +16,12 @@ INITIAL_WIDTH = 800
 INITIAL_HEIGHT = 600
 
 
-def rotation_y(angle: float) -> np.ndarray:
-    """Model matrix: rotation around the Y axis."""
-    c, s = np.cos(angle), np.sin(angle)
-    return np.array(
-        [
-            [c, 0, s, 0],
-            [0, 1, 0, 0],
-            [-s, 0, c, 0],
-            [0, 0, 0, 1],
-        ],
-        dtype=np.float32,
-    )
+@dataclass
+class DragState:
+    """Mouse-drag state used to rotate the camera."""
 
-
-def look_at(eye, target, up=(0.0, 1.0, 0.0)) -> np.ndarray:
-    """View matrix: right-handed, camera looks down -Z."""
-    eye, target, up = (np.asarray(v, dtype=np.float32) for v in (eye, target, up))
-    f = target - eye
-    f /= np.linalg.norm(f)
-    s = np.cross(f, up)
-    s /= np.linalg.norm(s)
-    u = np.cross(s, f)
-    view = np.identity(4, dtype=np.float32)
-    view[0, :3], view[1, :3], view[2, :3] = s, u, -f
-    view[:3, 3] = -view[:3, :3] @ eye
-    return view
-
-
-def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndarray:
-    """Projection matrix: right-handed, clip-space z in [0, 1]."""
-    t = 1.0 / np.tan(fov_y / 2.0)
-    proj = np.zeros((4, 4), dtype=np.float32)
-    proj[0, 0] = t / aspect
-    proj[1, 1] = t
-    proj[2, 2] = far / (near - far)
-    proj[2, 3] = near * far / (near - far)
-    proj[3, 2] = -1.0
-    return proj
+    active: bool = False
+    last_pos: tuple[float, float] = (0.0, 0.0)
 
 
 class SimpleView(spy.AppWindow):
@@ -70,12 +40,36 @@ class SimpleView(spy.AppWindow):
 
         mesh = o3d.io.read_triangle_mesh(obj_path)
 
-        verts = np.asarray(mesh.vertices, dtype=np.float32)
+        # One vertex per triangle corner (non-indexed), positions only for now:
+        # every 3 consecutive vertices form one triangle.
+        tris = np.asarray(mesh.triangles).reshape(-1)
+        verts = np.ascontiguousarray(np.asarray(mesh.vertices, dtype=np.float32)[tris])
+        self.vertex_count = len(verts)
         self.vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=verts)
+
+        input_layout = self.device.create_input_layout(
+            input_elements=[
+                {
+                    "semantic_name": "POSITION",
+                    "semantic_index": 0,
+                    "format": spy.Format.rgb32_float,
+                    "offset": 0,
+                    "buffer_slot_index": 0,
+                }
+            ],
+            vertex_streams=[{"stride": 12, "slot_class": spy.InputSlotClass.per_vertex}],
+        )
+
+        # Orbit around the center of the mesh bounding box.
+        lo, hi = verts.min(axis=0), verts.max(axis=0)
+        self.camera = OrbitCamera(
+            target=(lo + hi) / 2.0, radius=float(np.linalg.norm(hi - lo)) / 2.0
+        )
+        self.drag = DragState()
 
         self.pipeline = self.device.create_render_pipeline(
             program=program,
-            input_layout=None,
+            input_layout=input_layout,
             targets=[{"format": SURFACE_FORMAT}],
             rasterizer={"cull_mode": spy.CullMode.back, "fill_mode": spy.FillMode.solid},
             depth_stencil={
@@ -120,10 +114,7 @@ class SimpleView(spy.AppWindow):
 
             cursor = spy.ShaderCursor(so)
             cursor.rmode = 1
-            model = rotation_y(time.perf_counter() * 0.5)
-            view = look_at(eye=(0.0, 0.5, 3.0), target=(0.0, 0.0, 0.0))
-            proj = perspective(np.radians(50.0), w / h, near=0.05, far=100.0)
-            mvp = proj @ view @ model
+            mvp = self.camera.view_proj(w / h)
             cursor.mvp = spy.float4x4(mvp.flatten().tolist())
 
             rp.set_render_state(
@@ -134,7 +125,20 @@ class SimpleView(spy.AppWindow):
                 }
             )
 
-            rp.draw({"vertex_count": 3})
+            rp.draw({"vertex_count": self.vertex_count})
+
+    def on_mouse_event(self, event: spy.MouseEvent):
+        if event.type == spy.MouseEventType.button_down and event.button == spy.MouseButton.left:
+            self.drag.active = True
+            self.drag.last_pos = (event.pos.x, event.pos.y)
+        elif event.type == spy.MouseEventType.button_up and event.button == spy.MouseButton.left:
+            self.drag.active = False
+        elif event.type == spy.MouseEventType.move and self.drag.active:
+            x, y = event.pos.x, event.pos.y
+            self.camera.rotate(x - self.drag.last_pos[0], y - self.drag.last_pos[1])
+            self.drag.last_pos = (x, y)
+        elif event.type == spy.MouseEventType.scroll:
+            self.camera.zoom(event.scroll.y)
 
     def on_resize(self, width, height):
         self.depth_stencil_tex = self.device.create_texture(

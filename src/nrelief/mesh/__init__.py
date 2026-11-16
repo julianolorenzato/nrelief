@@ -17,7 +17,7 @@ def run(
     app.run()
 
 
-def simple_run():
+def simple_run(obj_path: Path):
     app = spy.App()
-    _ = SimpleView(app)
+    _ = SimpleView(app, obj_path=obj_path)
     app.run()

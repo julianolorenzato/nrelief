@@ -41,7 +41,7 @@ def view(
     from . import mesh
 
     if simple:
-        mesh.simple_run()
+        mesh.simple_run(obj_path=obj_path)
     else:
         mesh.run(obj_path=obj_path, weights_path=weights_path)
 

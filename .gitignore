@@ -11,3 +11,6 @@ wheels/
 
 # SlangPy API docs (local reference only)
 docs/slangpy-api/
+
+# Local assets
+assets/

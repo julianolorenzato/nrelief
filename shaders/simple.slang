@@ -9,8 +9,8 @@ VSOut vertexMain(VSIn i)
 {
     VSOut o;
     o.clip = mul(mvp, float4(i.pos, 1.0));
-    o.nrm = i.nrm;
-    o.uv = i.uv;
+    // o.nrm = i.nrm;
+    // o.uv = i.uv;
     return o;
 }
 
@@ -26,5 +26,7 @@ float4 fragmentMain(VSOut data) : SV_Target
     case RenderMode::Relief: {
         return float4(0.0, 0.5, 1.0, 1.0);
     }
+    default:
+        return float4(1.0, 1.0, 1.0, 1.0);
     }
 }
