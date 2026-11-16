@@ -2,13 +2,11 @@ from pathlib import Path
 
 import numpy as np
 import slangpy as spy
-from numpy.typing import NDArray
 
 from .obj import load_obj
 
 SHADERS = Path(__file__).parents[3] / "shaders"
 DEPTH_FORMAT: spy.Format = spy.Format.d32_float
-
 
 class MeshRenderer:
     """Device-side state: mesh buffers, MLP weights, pipeline. Draws into any color/depth view."""
@@ -62,7 +60,7 @@ class MeshRenderer:
         encoder: spy.CommandEncoder,
         color_tex: spy.Texture,
         depth_tex: spy.Texture,
-        mvp: NDArray[np.float32],
+        mvp: spy.float4x4,
     ) -> None:
         w, h = color_tex.width, color_tex.height
         rp: spy.RenderPassDescDict = {
@@ -84,6 +82,6 @@ class MeshRenderer:
                 "scissor_rects": [spy.ScissorRect.from_size(w, h)],
             })
             cursor = spy.ShaderCursor(p.bind_pipeline(self.pipeline))
-            cursor.mvp = spy.float4x4(mvp)
+            cursor.mvp = mvp
             cursor.weights = self.weights
             p.draw({"vertex_count": self.vertex_count})

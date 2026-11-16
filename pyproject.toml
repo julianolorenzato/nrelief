@@ -16,7 +16,8 @@ dependencies = [
 ]
 
 [tool.ruff]
-line-length = 80
+line-length = 100
+lint.ignore = ["B008"]
 
 [project.scripts]
 nrelief = "nrelief:main"

@@ -2,7 +2,10 @@ from pathlib import Path
 
 import typer
 
-app = typer.Typer(help="NRelief: train, export and view a neural relief model.", no_args_is_help=True)
+app = typer.Typer(
+    help="NRelief: train, export and view a neural relief model.",
+    no_args_is_help=True,
+)
 
 
 @app.command()
@@ -32,11 +35,15 @@ def export(
 def view(
     obj_path: Path = typer.Argument("assets/cube.obj", help="OBJ mesh to render."),
     weights_path: Path = typer.Argument("weights.bin", help="Exported weights file."),
+    simple: bool = False,
 ):
     """Open the interactive viewer."""
-    from .mesh.view import view as run
+    from . import mesh
 
-    run(obj_path=obj_path, weights_path=weights_path)
+    if simple:
+        mesh.simple_run()
+    else:
+        mesh.run(obj_path=obj_path, weights_path=weights_path)
 
 
 def main():
