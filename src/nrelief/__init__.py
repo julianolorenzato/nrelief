@@ -32,18 +32,11 @@ def export(
 
 
 @app.command()
-def view(
-    obj_path: Path = typer.Argument("assets/cube.obj", help="OBJ mesh to render."),
-    weights_path: Path = typer.Argument("weights.bin", help="Exported weights file."),
-    simple: bool = False,
-):
+def view(obj_path: Path = typer.Argument("assets/cube.obj", help="OBJ mesh to render.")):
     """Open the interactive viewer."""
-    from . import mesh
+    from . import gfx
 
-    if simple:
-        mesh.simple_run(obj_path=obj_path)
-    else:
-        mesh.run(obj_path=obj_path, weights_path=weights_path)
+    gfx.run(obj_path=obj_path)
 
 
 def main():

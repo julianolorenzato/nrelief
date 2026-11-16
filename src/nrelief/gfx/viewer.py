@@ -2,10 +2,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import open3d as o3d
 import slangpy as spy
 
 from .camera import OrbitCamera
+from .mesh import Mesh
 
 TITLE = "Neural Relief Mapping"
 SHADERS_DIR = Path(__file__).parents[3] / "shaders"
@@ -24,7 +24,7 @@ class DragState:
     last_pos: tuple[float, float] = (0.0, 0.0)
 
 
-class SimpleView(spy.AppWindow):
+class Viewer(spy.AppWindow):
     def __init__(self, app, obj_path: Path):
         super().__init__(
             app,
@@ -38,48 +38,17 @@ class SimpleView(spy.AppWindow):
             str(SHADERS_DIR / SHADER_PROGRAM_ENTRYPOINT), ["vertexMain", "fragmentMain"]
         )
 
-        model = o3d.io.read_triangle_model(obj_path)  # ty: ignore[invalid-argument-type]
-        if not model.meshes:
-            raise ValueError(f"failed to load {obj_path}: no triangle meshes found")
+        mesh = Mesh(obj_path)
 
-        # One vertex per triangle corner (non-indexed): every 3 consecutive
-        # vertices form one triangle. Interleaved as pos(3) nrm(3) uv(2).
-        pos_parts, nrm_parts, uv_parts = [], [], []
-        for info in model.meshes:
-            mesh = info.mesh
-            if not mesh.has_vertex_normals():
-                mesh.compute_vertex_normals()
-            tris = np.asarray(mesh.triangles).reshape(-1)
-            pos = np.asarray(mesh.vertices, dtype=np.float32)[tris]
-            pos_parts.append(pos)
-            nrm_parts.append(np.asarray(mesh.vertex_normals, dtype=np.float32)[tris])
-            if mesh.has_triangle_uvs():
-                uv_parts.append(np.asarray(mesh.triangle_uvs, dtype=np.float32))  # one per corner
-            else:
-                uv_parts.append(np.zeros((len(tris), 2), dtype=np.float32))
-        pos = np.concatenate(pos_parts)
-        nrm = np.concatenate(nrm_parts)
-        uv = np.concatenate(uv_parts)
-        verts = np.ascontiguousarray(np.hstack([pos, nrm, uv]), dtype=np.float32)
-
-        self.vertex_count = len(verts)
-        self.vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=verts)
-
-        # Color texture (albedo) of the first mesh's material, already decoded by Open3D.
-        albedo = np.asarray(model.materials[model.meshes[0].material_idx].albedo_img)
-        if albedo.ndim != 3 or albedo.dtype != np.uint8:
-            # No texture in the .mtl (e.g. cube.obj): use a 1x1 white texel.
-            albedo = np.full((1, 1, 4), 255, dtype=np.uint8)
-        elif albedo.shape[2] == 3:
-            albedo = np.dstack([albedo, np.full(albedo.shape[:2], 255, dtype=np.uint8)])
-        albedo = np.ascontiguousarray(albedo)
+        self.vertex_count = len(mesh.verts)
+        self.vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=mesh.verts)
 
         self.color_tex = self.device.create_texture(
             format=spy.Format.rgba8_unorm_srgb,  # color data -> sRGB
-            width=albedo.shape[1],
-            height=albedo.shape[0],
+            width=mesh.albedo.shape[1],
+            height=mesh.albedo.shape[0],
             usage=spy.TextureUsage.shader_resource,
-            data=albedo,
+            data=mesh.albedo,
         )
         self.sampler = self.device.create_sampler()  # linear filtering, wrap addressing
 
@@ -111,7 +80,7 @@ class SimpleView(spy.AppWindow):
         )
 
         # Orbit around the center of the mesh bounding box.
-        lo, hi = pos.min(axis=0), pos.max(axis=0)
+        lo, hi = mesh.pos.min(axis=0), mesh.pos.max(axis=0)
         self.camera = OrbitCamera(
             target=(lo + hi) / 2.0, radius=float(np.linalg.norm(hi - lo)) / 2.0
         )
