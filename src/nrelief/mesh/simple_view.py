@@ -38,14 +38,52 @@ class SimpleView(spy.AppWindow):
             str(SHADERS_DIR / SHADER_PROGRAM_ENTRYPOINT), ["vertexMain", "fragmentMain"]
         )
 
-        mesh = o3d.io.read_triangle_mesh(obj_path)
+        # read_triangle_model triangulates quads/polygons (read_triangle_mesh drops them)
+        # and also loads the textures referenced by the .mtl file.
+        model = o3d.io.read_triangle_model(str(obj_path))
+        if not model.meshes:
+            raise ValueError(f"failed to load {obj_path}: no triangle meshes found")
 
-        # One vertex per triangle corner (non-indexed), positions only for now:
-        # every 3 consecutive vertices form one triangle.
-        tris = np.asarray(mesh.triangles).reshape(-1)
-        verts = np.ascontiguousarray(np.asarray(mesh.vertices, dtype=np.float32)[tris])
+        # One vertex per triangle corner (non-indexed): every 3 consecutive
+        # vertices form one triangle. Interleaved as pos(3) nrm(3) uv(2).
+        pos_parts, nrm_parts, uv_parts = [], [], []
+        for info in model.meshes:
+            mesh = info.mesh
+            if not mesh.has_vertex_normals():
+                mesh.compute_vertex_normals()
+            tris = np.asarray(mesh.triangles).reshape(-1)
+            pos = np.asarray(mesh.vertices, dtype=np.float32)[tris]
+            pos_parts.append(pos)
+            nrm_parts.append(np.asarray(mesh.vertex_normals, dtype=np.float32)[tris])
+            if mesh.has_triangle_uvs():
+                uv_parts.append(np.asarray(mesh.triangle_uvs, dtype=np.float32))  # one per corner
+            else:
+                uv_parts.append(np.zeros((len(tris), 2), dtype=np.float32))
+        pos = np.concatenate(pos_parts)
+        nrm = np.concatenate(nrm_parts)
+        uv = np.concatenate(uv_parts)
+        verts = np.ascontiguousarray(np.hstack([pos, nrm, uv]), dtype=np.float32)
+
         self.vertex_count = len(verts)
         self.vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=verts)
+
+        # Color texture (albedo) of the first mesh's material, already decoded by Open3D.
+        albedo = np.asarray(model.materials[model.meshes[0].material_idx].albedo_img)
+        if albedo.ndim != 3 or albedo.dtype != np.uint8:
+            # No texture in the .mtl (e.g. cube.obj): use a 1x1 white texel.
+            albedo = np.full((1, 1, 4), 255, dtype=np.uint8)
+        elif albedo.shape[2] == 3:
+            albedo = np.dstack([albedo, np.full(albedo.shape[:2], 255, dtype=np.uint8)])
+        albedo = np.ascontiguousarray(albedo)
+
+        self.color_tex = self.device.create_texture(
+            format=spy.Format.rgba8_unorm_srgb,  # color data -> sRGB
+            width=albedo.shape[1],
+            height=albedo.shape[0],
+            usage=spy.TextureUsage.shader_resource,
+            data=albedo,
+        )
+        self.sampler = self.device.create_sampler()  # linear filtering, wrap addressing
 
         input_layout = self.device.create_input_layout(
             input_elements=[
@@ -55,13 +93,27 @@ class SimpleView(spy.AppWindow):
                     "format": spy.Format.rgb32_float,
                     "offset": 0,
                     "buffer_slot_index": 0,
-                }
+                },
+                {
+                    "semantic_name": "NORMAL",
+                    "semantic_index": 0,
+                    "format": spy.Format.rgb32_float,
+                    "offset": 12,
+                    "buffer_slot_index": 0,
+                },
+                {
+                    "semantic_name": "TEXCOORD",
+                    "semantic_index": 0,
+                    "format": spy.Format.rg32_float,
+                    "offset": 24,
+                    "buffer_slot_index": 0,
+                },
             ],
-            vertex_streams=[{"stride": 12, "slot_class": spy.InputSlotClass.per_vertex}],
+            vertex_streams=[{"stride": 32, "slot_class": spy.InputSlotClass.per_vertex}],
         )
 
         # Orbit around the center of the mesh bounding box.
-        lo, hi = verts.min(axis=0), verts.max(axis=0)
+        lo, hi = pos.min(axis=0), pos.max(axis=0)
         self.camera = OrbitCamera(
             target=(lo + hi) / 2.0, radius=float(np.linalg.norm(hi - lo)) / 2.0
         )
@@ -114,6 +166,8 @@ class SimpleView(spy.AppWindow):
 
             cursor = spy.ShaderCursor(so)
             cursor.rmode = 1
+            cursor.colorTex = self.color_tex
+            cursor.samp = self.sampler
             mvp = self.camera.view_proj(w / h)
             cursor.mvp = spy.float4x4(mvp.flatten().tolist())
 

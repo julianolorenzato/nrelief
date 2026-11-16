@@ -7,13 +7,13 @@ enum RenderMode
 struct VSIn
 {
     float3 pos : POSITION;
-    // float3 nrm : NORMAL;
-    // float2 uv : TEXCOORD0;
+    float3 nrm : NORMAL;
+    float2 uv : TEXCOORD0;
 };
 
 struct VSOut
 {
     float4 clip : SV_Position;
-    // float3 nrm : NORMAL;
-    // float2 uv : TEXCOORD0;
+    float3 nrm : NORMAL;
+    float2 uv : TEXCOORD0;
 };
