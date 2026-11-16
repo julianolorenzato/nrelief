@@ -44,6 +44,7 @@ def bake(
     mesh_path: Path = typer.Argument(..., help="Mesh to bake (OBJ etc.)."),
     out_dir: Path = typer.Option("bake_out", help="Directory for the PNG files."),
     res: int = typer.Option(64, min=1, help="Texels per side."),
+    max_hits: int = typer.Option(4, min=1, max=4),
 ):
     """Bake depth layers per axis and save one 16-bit PNG per axis and layer."""
     import numpy as np
@@ -52,7 +53,7 @@ def bake(
     from .gfx.bake import bake
     from .gfx.mesh import Mesh
 
-    layers = bake(Mesh(mesh_path), res)
+    layers = bake(Mesh(mesh_path), resolution=res, max_hits=max_hits)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for axis, depth in enumerate(layers):

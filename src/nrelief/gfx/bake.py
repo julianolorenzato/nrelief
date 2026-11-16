@@ -1,20 +1,53 @@
+import numba as nb
 import numpy as np
 
 from .mesh import Mesh
 
-MAX_HITS = 4
+
+@nb.njit(cache=True)
+def _raster_axis(tris, resolution, max_hits):
+    """Rasteriza os triângulos (T, 3, [x, y, z]) e guarda, por texel, os max_hits menores z."""
+    layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
+    for t in range(tris.shape[0]):
+        ax, ay, az = tris[t, 0]
+        bx, by, bz = tris[t, 1]
+        cx, cy, cz = tris[t, 2]
+        area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+        if abs(area) < 1e-12:
+            continue  # triângulo de lado (paralelo ao raio)
+
+        min_x = max(0, int(np.floor(min(ax, bx, cx))))
+        max_x = min(resolution - 1, int(np.ceil(max(ax, bx, cx))))
+        min_y = max(0, int(np.floor(min(ay, by, cy))))
+        max_y = min(resolution - 1, int(np.ceil(max(ay, by, cy))))
+
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                px, py = x + 0.5, y + 0.5  # centro do texel
+                l0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area
+                l1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area
+                l2 = ((ax - px) * (by - py) - (ay - py) * (bx - px)) / area
+                if min(l0, l1, l2) < -1e-4:
+                    continue  # fora do triângulo
+                z = l0 * az + l1 * bz + l2 * cz
+
+                # Inserção ordenada nos max_hits slots.
+                k = max_hits - 1
+                if z >= layers[y, x, k]:
+                    continue
+                while k > 0 and layers[y, x, k - 1] > z:
+                    layers[y, x, k] = layers[y, x, k - 1]
+                    k -= 1
+                layers[y, x, k] = z
+    return layers
 
 
-def cross2(a, b):
-    return a[0] * b[1] - a[1] * b[0]
-
-
-def bake(mesh: Mesh, resolution):
+def bake(mesh: Mesh, resolution, max_hits):
     # Bounding Box Calculation
     lo = mesh.pos.min(axis=0)
     hi = mesh.pos.max(axis=0)
     center = 0.5 * (lo + hi)
-    half = 0.5 * (hi - lo) # a value for half of the box in each axis
+    half = 0.5 * (hi - lo)  # a value for half of the box in each axis
 
     # Moves all mesh vertices in order to put the
     # bounding box center at the space origin.
@@ -29,7 +62,7 @@ def bake(mesh: Mesh, resolution):
 
         # Guard against degenerated meshes (plane mesh in this axis)
         if half[u] <= 0 or half[v] <= 0:
-            result.append(np.full((resolution, resolution, MAX_HITS), np.inf, np.float32))
+            result.append(np.full((resolution, resolution, max_hits), np.inf, np.float32))
             continue
 
         # Coordinate transformations for x, y and z:
@@ -41,39 +74,13 @@ def bake(mesh: Mesh, resolution):
         ty = (p[:, v] + half[v]) / (2 * half[v]) * resolution
         z = (p[:, axis] + half[axis]) / (2 * half[axis])
 
-        tris = np.stack([tx, ty, z], axis=1).reshape(-1, 3, 3)  # (T, 3 vértices, [x, y, z]); muda por eixo
+        tris = np.stack([tx, ty, z], axis=1).reshape(
+            -1, 3, 3
+        )  # (T, 3 vértices, [x, y, z]); muda por eixo
         tri_uv = mesh.uv.reshape(-1, 3, 2)  # textura, igual para os 3 eixos
 
-        # Todos os z que atingem cada texel (y, x).
-        hits = [[[] for _ in range(resolution)] for _ in range(resolution)]
-
-        for tri in tris:
-            tuv, tz = tri[:, :2], tri[:, 2]  # texels e profundidades dos 3 vértices
-            area = cross2(tuv[1] - tuv[0], tuv[2] - tuv[0])
-            if abs(area) < 1e-12:
-                continue  # triângulo de lado (paralelo ao raio)
-
-            min_x = max(0, int(np.floor(tuv[:, 0].min())))
-            max_x = min(resolution - 1, int(np.ceil(tuv[:, 0].max())))
-            min_y = max(0, int(np.floor(tuv[:, 1].min())))
-            max_y = min(resolution - 1, int(np.ceil(tuv[:, 1].max())))
-
-            for y in range(min_y, max_y + 1):
-                for x in range(min_x, max_x + 1):
-                    c = np.array([x + 0.5, y + 0.5])  # centro do texel
-                    l0 = cross2(tuv[1] - c, tuv[2] - c) / area
-                    l1 = cross2(tuv[2] - c, tuv[0] - c) / area
-                    l2 = cross2(tuv[0] - c, tuv[1] - c) / area
-                    if min(l0, l1, l2) < -1e-4:
-                        continue  # fora do triângulo
-                    hits[y][x].append(l0 * tz[0] + l1 * tz[1] + l2 * tz[2])
-
-        # As MAX_HITS camadas mais próximas, ordenadas. Texel vazio = inf.
-        layers = np.full((resolution, resolution, MAX_HITS), np.inf, np.float32)
-        for y in range(resolution):
-            for x in range(resolution):
-                zs = sorted(hits[y][x])[:MAX_HITS]
-                layers[y, x, : len(zs)] = zs
+        # As MAX_HITS camadas mais próximas por texel, ordenadas. Texel vazio = inf.
+        layers = _raster_axis(np.ascontiguousarray(tris, dtype=np.float64), resolution, max_hits)
         result.append(layers)
 
     return result
