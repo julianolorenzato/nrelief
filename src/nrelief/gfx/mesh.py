@@ -26,9 +26,9 @@ class Mesh:
             else:
                 uv_parts.append(np.zeros((len(tris), 2), dtype=np.float32))
 
-        self.pos = np.concatenate(pos_parts)
-        self.nrm = np.concatenate(nrm_parts)
-        self.uv = np.concatenate(uv_parts)
+        self.pos = np.concatenate(pos_parts, dtype=np.float32)
+        self.nrm = np.concatenate(nrm_parts, dtype=np.float32)
+        self.uv = np.concatenate(uv_parts, dtype=np.float32)
         self.verts = np.ascontiguousarray(
             np.hstack([self.pos, self.nrm, self.uv]), dtype=np.float32
         )

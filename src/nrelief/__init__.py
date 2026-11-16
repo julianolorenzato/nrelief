@@ -39,5 +39,31 @@ def view(obj_path: Path = typer.Argument("assets/cube.obj", help="OBJ mesh to re
     gfx.run(obj_path=obj_path)
 
 
+@app.command()
+def bake(
+    mesh_path: Path = typer.Argument(..., help="Mesh to bake (OBJ etc.)."),
+    out_dir: Path = typer.Option("bake_out", help="Directory for the PNG files."),
+    res: int = typer.Option(64, min=1, help="Texels per side."),
+):
+    """Bake depth layers per axis and save one 16-bit PNG per axis and layer."""
+    import numpy as np
+    import open3d as o3d
+
+    from .gfx.bake import bake
+    from .gfx.mesh import Mesh
+
+    layers = bake(Mesh(mesh_path), res)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for axis, depth in enumerate(layers):
+        for k in range(depth.shape[2]):
+            # z em [0, 1] -> uint16; texel sem hit (inf) vira 65535.
+            img = np.where(np.isinf(depth[..., k]), 1.0, depth[..., k])
+            img = np.rint(np.clip(img, 0.0, 1.0) * 65535).astype(np.uint16)
+            path = out_dir / f"depth_axis{axis}_hit{k}.png"
+            o3d.io.write_image(path, o3d.geometry.Image(np.ascontiguousarray(img)))
+    typer.echo(f"saved {3 * layers[0].shape[2]} images to {out_dir}")
+
+
 def main():
     app()
