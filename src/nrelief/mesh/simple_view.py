@@ -38,9 +38,7 @@ class SimpleView(spy.AppWindow):
             str(SHADERS_DIR / SHADER_PROGRAM_ENTRYPOINT), ["vertexMain", "fragmentMain"]
         )
 
-        # read_triangle_model triangulates quads/polygons (read_triangle_mesh drops them)
-        # and also loads the textures referenced by the .mtl file.
-        model = o3d.io.read_triangle_model(str(obj_path))
+        model = o3d.io.read_triangle_model(obj_path)  # ty: ignore[invalid-argument-type]
         if not model.meshes:
             raise ValueError(f"failed to load {obj_path}: no triangle meshes found")
 
