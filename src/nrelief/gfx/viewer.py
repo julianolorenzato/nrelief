@@ -43,13 +43,16 @@ class Viewer(spy.AppWindow):
         self.vertex_count = len(mesh.verts)
         self.vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=mesh.verts)
 
-        self.color_tex = self.device.create_texture(
-            format=spy.Format.rgba8_unorm_srgb,  # color data -> sRGB
-            width=mesh.albedo.shape[1],
-            height=mesh.albedo.shape[0],
-            usage=spy.TextureUsage.shader_resource,
-            data=mesh.albedo,
-        )
+        # Optional: without an albedo the shader falls back to plain white.
+        self.color_tex = None
+        if mesh.albedo is not None:
+            self.color_tex = self.device.create_texture(
+                format=spy.Format.rgba8_unorm_srgb,  # color data -> sRGB
+                width=mesh.albedo.shape[1],
+                height=mesh.albedo.shape[0],
+                usage=spy.TextureUsage.shader_resource,
+                data=mesh.albedo,
+            )
         self.sampler = self.device.create_sampler()  # linear filtering, wrap addressing
 
         input_layout = self.device.create_input_layout(
@@ -133,7 +136,9 @@ class Viewer(spy.AppWindow):
 
             cursor = spy.ShaderCursor(so)
             cursor.rmode = 1
-            cursor.colorTex = self.color_tex
+            cursor.hasColorTex = self.color_tex is not None
+            if self.color_tex is not None:
+                cursor.colorTex = self.color_tex
             cursor.samp = self.sampler
             mvp = self.camera.view_proj(w / h)
             cursor.mvp = spy.float4x4(mvp.flatten().tolist())

@@ -33,11 +33,18 @@ class Mesh:
             np.hstack([self.pos, self.nrm, self.uv]), dtype=np.float32
         )
 
-        # Color texture (albedo) of the first mesh's material, already decoded by Open3D.
-        albedo = np.asarray(model.materials[model.meshes[0].material_idx].albedo_img)
-        if albedo.ndim != 3 or albedo.dtype != np.uint8:
-            # No texture in the .mtl (e.g. cube.obj): use a 1x1 white texel.
-            albedo = np.full((1, 1, 4), 255, dtype=np.uint8)
-        elif albedo.shape[2] == 3:
-            albedo = np.dstack([albedo, np.full(albedo.shape[:2], 255, dtype=np.uint8)])
-        self.albedo = np.ascontiguousarray(albedo)
+        # Textures of the first mesh's material, already decoded by Open3D.
+        material = model.materials[model.meshes[0].material_idx]
+        # Each is None when the material has no such texture (e.g. cube.obj).
+        self.albedo: np.ndarray | None = self._rgba(material.albedo_img)
+        self.normal: np.ndarray | None = self._rgba(material.normal_img)
+
+    @staticmethod
+    def _rgba(img) -> np.ndarray | None:
+        """Return img as a contiguous HxWx4 uint8 array, or None if absent."""
+        img = np.asarray(img)
+        if img.ndim != 3 or img.dtype != np.uint8:
+            return None
+        if img.shape[2] == 3:
+            img = np.dstack([img, np.full(img.shape[:2], 255, dtype=np.uint8)])
+        return np.ascontiguousarray(img)

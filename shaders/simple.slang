@@ -3,6 +3,7 @@ import relief_mapping;
 
 float4x4 mvp;
 RenderMode rmode;
+bool hasColorTex;
 Texture2D colorTex;
 SamplerState samp;
 
@@ -30,7 +31,7 @@ float4 fragmentMain(VSOut data) : SV_Target
         float diffuse = max(dot(n, LIGHT_DIR), 0.0);
         // OBJ uvs have V pointing up, but image row 0 is the top: flip V.
         float2 uv = float2(data.uv.x, 1.0 - data.uv.y);
-        float3 albedo = colorTex.Sample(samp, uv).rgb;
+        float3 albedo = hasColorTex ? colorTex.Sample(samp, uv).rgb : float3(1.0, 1.0, 1.0);
         return float4(albedo * (AMBIENT + diffuse), 1.0);
     }
 
