@@ -228,9 +228,6 @@ class Viewer(spy.AppWindow):
             case RenderMode.RELIEF:
                 pipeline, vbuf, count = self.relief_pipeline, self.box_vbuf, self.box_vertex_count
 
-        # Camera in object space, where the relief ray is marched.
-        cam_obj = sm.mul(self.model_inv_mat, spy.float4(*self.camera.eye.tolist(), 1.0)).xyz
-
         with cmd_enc.begin_render_pass(rp_desc) as rp:
             cursor = spy.ShaderCursor(rp.bind_pipeline(pipeline))
             cursor.rmode = self.rmode.value
@@ -238,10 +235,9 @@ class Viewer(spy.AppWindow):
             cursor.view = self.camera.view()
             cursor.proj = self.camera.proj(w / h)
             cursor.normal = self.normal_mat
-            # All parameters are bound in both modes: it is a single program.
             cursor.colorTex = self.color_tex
             cursor.samp = self.sampler
-            cursor.camPos = cam_obj
+            cursor.camPos = sm.mul(self.model_inv_mat, spy.float4(self.camera.eye, 1.0)).xyz
             cursor.boxMin = self.box_min
             cursor.boxMax = self.box_max
             cursor.linearSteps = RELIEF_LINEAR_STEPS

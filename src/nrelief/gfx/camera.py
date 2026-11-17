@@ -11,7 +11,7 @@ class OrbitCamera:
     """Camera that orbits around `target` on a sphere (yaw, pitch, distance)."""
 
     def __init__(self, target, radius: float, fov_y: float = np.radians(50.0)):
-        self.target = np.asarray(target, dtype=np.float32)
+        self.target = spy.float3(*np.asarray(target, dtype=np.float32).tolist())
         self.radius = radius  # radius of the mesh bounding sphere
         self.fov_y = fov_y
         self.yaw = 0.6
@@ -29,23 +29,18 @@ class OrbitCamera:
         )
 
     @property
-    def eye(self) -> np.ndarray:
+    def eye(self) -> spy.float3:
         # Spherical -> Cartesian, offset by the orbit target.
-        offset = self.dist * np.array(
-            [
-                np.cos(self.pitch) * np.sin(self.yaw),
-                np.sin(self.pitch),
-                np.cos(self.pitch) * np.cos(self.yaw),
-            ],
-            dtype=np.float32,
+        offset = spy.float3(
+            np.cos(self.pitch) * np.sin(self.yaw),
+            np.sin(self.pitch),
+            np.cos(self.pitch) * np.cos(self.yaw),
         )
-        return self.target + offset
+        return self.target + offset * self.dist
 
     def view(self) -> spy.float4x4:
         """View matrix: right-handed, camera looks down -Z."""
-        return sm.matrix_from_look_at(
-            spy.float3(*self.eye.tolist()), spy.float3(*self.target.tolist()), spy.float3(0, 1, 0)
-        )
+        return sm.matrix_from_look_at(self.eye, self.target, spy.float3(0, 1, 0))
 
     def proj(self, aspect: float) -> spy.float4x4:
         """Projection matrix: right-handed, clip-space z in [0, 1]."""
