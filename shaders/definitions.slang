@@ -16,7 +16,7 @@ struct VSOut
     float4 clip : SV_Position;
     float3 nrm : NORMAL;
     float2 uv : TEXCOORD0;
-    float3 localPos : TEXCOORD1; // position in local [0, 1]^3 space
+    float3 objPos : TEXCOORD1; // position in object space
 };
 
 struct PSOut

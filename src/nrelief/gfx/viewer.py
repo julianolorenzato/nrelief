@@ -30,10 +30,12 @@ class RenderMode(Enum):
         return members[(members.index(self) + 1) % len(members)]
 
 
-def unit_cube_vertices() -> np.ndarray:
-    """36 vertices (12 triangles, counter-clockwise seen from outside) of the cube [0, 1]^3,
+def box_vertices(lo, hi) -> np.ndarray:
+    """36 vertices (12 triangles, counter-clockwise seen from outside) of the box [lo, hi],
     in the mesh vertex layout pos(3) nrm(3) uv(2); normal and uv are unused (zero)."""
-    c = np.array([[i & 1, (i >> 1) & 1, (i >> 2) & 1] for i in range(8)], dtype=np.float32)
+    c = np.array(
+        [[hi[a] if (i >> a) & 1 else lo[a] for a in range(3)] for i in range(8)], dtype=np.float32
+    )
     quads = [
         (0, 4, 6, 2),
         (1, 3, 7, 5),  # -X, +X
@@ -102,29 +104,19 @@ class Viewer(spy.AppWindow):
                         np.ascontiguousarray(albedo[:, :, k]), layer=i * 4 + k
                     )
 
-        # Local space = mesh bounding box normalized per axis into [0, 1]^3 (the same space the
-        # bake uses). model = translate(lo) * scale(extent) brings it back to world space.
-        lo, hi = mesh.pos.min(axis=0), mesh.pos.max(axis=0)
-        extent = np.where(hi > lo, hi - lo, 1.0).astype(np.float32)  # guard flat axes
-        self.model_mat = sm.mul(
-            sm.matrix_from_translation(spy.float3(*lo.tolist())),
-            sm.matrix_from_scaling(spy.float3(*extent.tolist())),
-        )
+        # Vertices stay in object space (the mesh's own coordinates); model places the object in
+        # the world. Identity for now: object space == world space.
+        self.model_mat = spy.float4x4.identity()
         self.model_inv_mat = sm.inverse(self.model_mat)
         self.normal_mat = sm.transpose(self.model_inv_mat)
 
-        # Mesh vertices in local space. Normals go through the inverse transpose of the
-        # normalization (scale by extent), so normalMatrix in the shader restores them.
-        verts = mesh.verts.copy()
-        verts[:, 0:3] = (mesh.pos - lo) / extent
-        nrm = mesh.nrm * extent
-        verts[:, 3:6] = nrm / np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
-        self.vertex_count = len(verts)
-        self.vbuf = self.device.create_buffer(
-            usage=spy.BufferUsage.vertex_buffer, data=np.ascontiguousarray(verts)
-        )
+        self.vertex_count = len(mesh.verts)
+        self.vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=mesh.verts)
 
-        # Every mesh is assumed to have a color texture.
+        # Mesh bounding box in object space: the same box the bake normalizes into [0, 1]^3.
+        lo, hi = mesh.pos.min(axis=0), mesh.pos.max(axis=0)
+        self.box_min, self.box_max = spy.float3(*lo.tolist()), spy.float3(*hi.tolist())
+
         if mesh.albedo is None:
             raise ValueError(f"{obj_path}: mesh has no albedo (color) texture")
         self.color_tex = self.device.create_texture(
@@ -169,9 +161,9 @@ class Viewer(spy.AppWindow):
         )
         self.drag = DragState()
 
-        # Relief: o cubo unitário é a geometria proxy; o shader marcha o raio dentro dele.
+        # Relief: a bounding box da malha é a geometria proxy; o shader marcha o raio dentro dela.
         # Mesmo programa e layout de vértice da malha; muda só o culling.
-        box = unit_cube_vertices()
+        box = box_vertices(lo, hi)
         self.box_vertex_count = len(box)
         self.box_vbuf = self.device.create_buffer(usage=spy.BufferUsage.vertex_buffer, data=box)
         self.relief_pipeline = self.device.create_render_pipeline(
@@ -236,23 +228,22 @@ class Viewer(spy.AppWindow):
             case RenderMode.RELIEF:
                 pipeline, vbuf, count = self.relief_pipeline, self.box_vbuf, self.box_vertex_count
 
-        view_mat = self.camera.view()
-        proj_mat = self.camera.proj(w / h)
-
-        # Camera in local [0, 1]^3 space, where the relief ray is marched.
-        cam_local = sm.mul(self.model_inv_mat, spy.float4(*self.camera.eye.tolist(), 1.0)).xyz
+        # Camera in object space, where the relief ray is marched.
+        cam_obj = sm.mul(self.model_inv_mat, spy.float4(*self.camera.eye.tolist(), 1.0)).xyz
 
         with cmd_enc.begin_render_pass(rp_desc) as rp:
             cursor = spy.ShaderCursor(rp.bind_pipeline(pipeline))
             cursor.rmode = self.rmode.value
             cursor.model = self.model_mat
-            cursor.view = view_mat
-            cursor.proj = proj_mat
-            cursor.normalMatrix = self.normal_mat
+            cursor.view = self.camera.view()
+            cursor.proj = self.camera.proj(w / h)
+            cursor.normal = self.normal_mat
             # All parameters are bound in both modes: it is a single program.
             cursor.colorTex = self.color_tex
             cursor.samp = self.sampler
-            cursor.camPos = cam_local
+            cursor.camPos = cam_obj
+            cursor.boxMin = self.box_min
+            cursor.boxMax = self.box_max
             cursor.linearSteps = RELIEF_LINEAR_STEPS
             cursor.depthMaps = self.depth_maps
             cursor.colorMaps = self.color_maps
@@ -264,6 +255,7 @@ class Viewer(spy.AppWindow):
                     "scissor_rects": [spy.ScissorRect.from_size(w, h)],
                 }
             )
+
             rp.draw({"vertex_count": count})
 
     def on_keyboard_event(self, event: spy.KeyboardEvent):
