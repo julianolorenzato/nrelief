@@ -56,14 +56,24 @@ def bake(
     layers = bake(Mesh(mesh_path), resolution=res, max_hits=max_hits)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for axis, depth in enumerate(layers):
+    saved = 0
+    for axis, maps in enumerate(layers):
+        depth = maps["depth"]
         for k in range(depth.shape[2]):
             # z em [0, 1] -> uint16; texel sem hit (inf) vira 65535.
             img = np.where(np.isinf(depth[..., k]), 1.0, depth[..., k])
             img = np.rint(np.clip(img, 0.0, 1.0) * 65535).astype(np.uint16)
             path = out_dir / f"depth_axis{axis}_hit{k}.png"
             o3d.io.write_image(path, o3d.geometry.Image(np.ascontiguousarray(img)))
-    typer.echo(f"saved {3 * layers[0].shape[2]} images to {out_dir}")
+            saved += 1
+            # Albedo/normal amostrados por camada, RGBA 8-bit (alpha 0 = sem hit).
+            for name in ("albedo", "normal"):
+                if maps[name] is not None:
+                    path = out_dir / f"{name}_axis{axis}_hit{k}.png"
+                    img = np.ascontiguousarray(maps[name][:, :, k])
+                    o3d.io.write_image(path, o3d.geometry.Image(img))
+                    saved += 1
+    typer.echo(f"saved {saved} images to {out_dir}")
 
 
 def main():

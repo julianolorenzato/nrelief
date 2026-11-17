@@ -5,13 +5,18 @@ from .mesh import Mesh
 
 
 @nb.njit(cache=True)
-def _raster_axis(tris, resolution, max_hits):
-    """Rasteriza os triângulos (T, 3, [x, y, z]) e guarda, por texel, os max_hits menores z."""
+def _raster_axis(tris, tri_uv, resolution, max_hits):
+    """Rasteriza os triângulos (T, 3, [x, y, z]) e guarda, por texel, os max_hits menores z
+    e o UV de textura interpolado de cada um desses hits."""
     layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
+    uvs = np.zeros((resolution, resolution, max_hits, 2), np.float32)
     for t in range(tris.shape[0]):
         ax, ay, az = tris[t, 0]
         bx, by, bz = tris[t, 1]
         cx, cy, cz = tris[t, 2]
+        au, av = tri_uv[t, 0]
+        bu, bv = tri_uv[t, 1]
+        cu, cv = tri_uv[t, 2]
         area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
         if abs(area) < 1e-12:
             continue  # triângulo de lado (paralelo ao raio)
@@ -37,9 +42,35 @@ def _raster_axis(tris, resolution, max_hits):
                     continue
                 while k > 0 and layers[y, x, k - 1] > z:
                     layers[y, x, k] = layers[y, x, k - 1]
+                    uvs[y, x, k] = uvs[y, x, k - 1]
                     k -= 1
                 layers[y, x, k] = z
-    return layers
+                # Projeção ortográfica: interpolação afim do UV é exata.
+                uvs[y, x, k, 0] = l0 * au + l1 * bu + l2 * cu
+                uvs[y, x, k, 1] = l0 * av + l1 * bv + l2 * cv
+    return layers, uvs
+
+
+def _sample(tex, uvs, valid):
+    """Amostra tex (H, W, 4) uint8 em uvs (..., 2), bilinear com wrap.
+
+    Mesma convenção do viewer: V do OBJ aponta para cima, linha 0 da imagem é o topo.
+    Onde valid é False o resultado é (0, 0, 0, 0).
+    """
+    h, w = tex.shape[:2]
+    x = uvs[..., 0] * w - 0.5
+    y = (1.0 - uvs[..., 1]) * h - 0.5
+    x0, y0 = np.floor(x), np.floor(y)
+    fx, fy = (x - x0)[..., None], (y - y0)[..., None]
+    x0 = x0.astype(np.int64) % w
+    y0 = y0.astype(np.int64) % h
+    x1, y1 = (x0 + 1) % w, (y0 + 1) % h
+    t = tex.astype(np.float32)
+    top = t[y0, x0] * (1 - fx) + t[y0, x1] * fx
+    bot = t[y1, x0] * (1 - fx) + t[y1, x1] * fx
+    out = np.rint(top * (1 - fy) + bot * fy).astype(np.uint8)
+    out[~valid] = 0
+    return out
 
 
 def bake(mesh: Mesh, resolution, max_hits):
@@ -55,14 +86,18 @@ def bake(mesh: Mesh, resolution, max_hits):
     # half[axis] possibly being a different scalar value for each axis.
     p = mesh.pos - center
 
-    result = []  # uma entrada (res, res, MAX_HITS) por eixo
+    # Uma entrada por eixo: {"depth": (res, res, max_hits) float32,
+    #                       "albedo"/"normal": (res, res, max_hits, 4) uint8 ou None}
+    result = []
 
     for axis in range(3):
         u, v = (axis + 1) % 3, (axis + 2) % 3
 
         # Guard against degenerated meshes (plane mesh in this axis)
         if half[u] <= 0 or half[v] <= 0:
-            result.append(np.full((resolution, resolution, max_hits), np.inf, np.float32))
+            layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
+            uvs = np.zeros((resolution, resolution, max_hits, 2), np.float32)
+            result.append(_axis_result(mesh, layers, uvs))
             continue
 
         # Coordinate transformations for x, y and z:
@@ -80,7 +115,21 @@ def bake(mesh: Mesh, resolution, max_hits):
         tri_uv = mesh.uv.reshape(-1, 3, 2)  # textura, igual para os 3 eixos
 
         # As MAX_HITS camadas mais próximas por texel, ordenadas. Texel vazio = inf.
-        layers = _raster_axis(np.ascontiguousarray(tris, dtype=np.float64), resolution, max_hits)
-        result.append(layers)
+        layers, uvs = _raster_axis(
+            np.ascontiguousarray(tris, dtype=np.float64),
+            np.ascontiguousarray(tri_uv, dtype=np.float64),
+            resolution,
+            max_hits,
+        )
+        result.append(_axis_result(mesh, layers, uvs))
 
     return result
+
+
+def _axis_result(mesh: Mesh, layers, uvs):
+    valid = np.isfinite(layers)
+    return {
+        "depth": layers,
+        "albedo": None if mesh.albedo is None else _sample(mesh.albedo, uvs, valid),
+        "normal": None if mesh.normal is None else _sample(mesh.normal, uvs, valid),
+    }

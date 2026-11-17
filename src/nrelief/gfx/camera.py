@@ -1,34 +1,10 @@
 import numpy as np
+import slangpy as spy
+from slangpy import math as sm
 
 ROTATE_SPEED = 0.005  # radians per pixel dragged
 ZOOM_STEP = 0.9  # distance multiplier per scroll step
 MAX_PITCH = np.pi / 2 - 0.01  # keeps the camera from flipping over the poles
-
-
-def look_at(eye, target, up=(0.0, 1.0, 0.0)) -> np.ndarray:
-    """View matrix: right-handed, camera looks down -Z."""
-    eye, target, up = (np.asarray(v, dtype=np.float32) for v in (eye, target, up))
-    f = target - eye
-    f /= np.linalg.norm(f)
-    s = np.cross(f, up)
-    s /= np.linalg.norm(s)
-    u = np.cross(s, f)
-    view = np.identity(4, dtype=np.float32)
-    view[0, :3], view[1, :3], view[2, :3] = s, u, -f
-    view[:3, 3] = -view[:3, :3] @ eye
-    return view
-
-
-def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndarray:
-    """Projection matrix: right-handed, clip-space z in [0, 1]."""
-    t = 1.0 / np.tan(fov_y / 2.0)
-    proj = np.zeros((4, 4), dtype=np.float32)
-    proj[0, 0] = t / aspect
-    proj[1, 1] = t
-    proj[2, 2] = far / (near - far)
-    proj[2, 3] = near * far / (near - far)
-    proj[3, 2] = -1.0
-    return proj
 
 
 class OrbitCamera:
@@ -65,9 +41,17 @@ class OrbitCamera:
         )
         return self.target + offset
 
-    def view_proj(self, aspect: float) -> np.ndarray:
-        view = look_at(self.eye, self.target)
-        proj = perspective(
-            self.fov_y, aspect, near=0.01 * self.dist, far=self.dist + 4.0 * self.radius
+    def view(self) -> spy.float4x4:
+        """View matrix: right-handed, camera looks down -Z."""
+        return sm.matrix_from_look_at(
+            spy.float3(*self.eye.tolist()), spy.float3(*self.target.tolist()), spy.float3(0, 1, 0)
         )
-        return proj @ view
+
+    def proj(self, aspect: float) -> spy.float4x4:
+        """Projection matrix: right-handed, clip-space z in [0, 1]."""
+        return sm.perspective(
+            self.fov_y, aspect, z_near=0.01 * self.dist, z_far=self.dist + 4.0 * self.radius
+        )
+
+    def view_proj(self, aspect: float) -> spy.float4x4:
+        return sm.mul(self.proj(aspect), self.view())
