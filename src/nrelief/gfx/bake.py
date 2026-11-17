@@ -10,28 +10,63 @@ HIT_MERGE_EPS = 2e-4
 
 
 @nb.njit(cache=True)
-def _raster_axis(tris, tri_uv, resolution, max_hits):
-    """Rasteriza os triângulos (T, 3, [x, y, z]) e guarda, por texel, os max_hits menores z
-    e o UV de textura interpolado de cada um desses hits.
+def _remove(zs, face, bary, facing, mixed, n, i, m):
+    """Remove os hits i..i+m-1 da lista (de tamanho n) de um raio; devolve o novo tamanho."""
+    for j in range(i, n - m):
+        zs[j] = zs[j + m]
+        face[j] = face[j + m]
+        bary[j, 0] = bary[j + m, 0]
+        bary[j, 1] = bary[j + m, 1]
+        facing[j] = facing[j + m]
+        mixed[j] = mixed[j + m]
+    for j in range(n - m, n):
+        zs[j] = np.inf
+        face[j] = -1
+    return n - m
+
+
+@nb.njit(cache=True)
+def _fill_thinnest_gap(zs, face, bary, facing, mixed, n):
+    """Remove o vão de ar mais fino, o par (saída, próxima entrada) mais próximo, juntando as
+    duas fatias de sólido. Os demais hits mantêm a paridade dentro/fora: só se preenche ar,
+    nunca se apaga sólido (os outros dois eixos ainda podem rejeitar o ar preenchido, mas nada
+    traz de volta uma fatia apagada). Devolve o novo tamanho (n se não há vão, n < 3)."""
+    best = -1
+    for i in range(1, n - 1, 2):
+        if best < 0 or zs[i + 1] - zs[i] < zs[best + 1] - zs[best]:
+            best = i
+    if best < 0:
+        return n
+    return _remove(zs, face, bary, facing, mixed, n, best, 2)
+
+
+@nb.njit(cache=True)
+def _raster_axis(tris, resolution, max_hits):
+    """Rasteriza os triângulos (T, 3, [x, y, z]) e guarda, por texel, até max_hits hits
+    ordenados por z e, de cada um, o triângulo atingido, sua orientação ao longo do eixo
+    (+1/-1) e as coordenadas baricêntricas (l0, l1) do centro do texel nele (texel vazio:
+    z = inf, face -1).
 
     Hits na mesma profundidade (até HIT_MERGE_EPS) viram um só: se as faces apontam para o
     mesmo lado, é a mesma superfície vista pelos dois triângulos de uma aresta; se apontam
-    para lados opostos, o raio só raspa o sólido (espessura zero) e o hit é descartado."""
-    # Candidatos por texel antes de descartar os hits rasantes, para que eles não tomem o
-    # lugar de superfícies reais entre os max_hits mais próximos.
+    para lados opostos, o raio só raspa o sólido (espessura zero) e o hit é descartado.
+
+    Um raio com hits demais é reduzido preenchendo seus vãos de ar mais finos
+    (_fill_thinnest_gap), e não cortando os mais distantes: isso apagaria as fatias de sólido
+    do fim do raio."""
+    # Candidatos por texel antes da redução final, com um slot de folga: um hit é inserido
+    # antes de a lista voltar a cand.
     cand = 2 * max_hits
-    zs = np.full((resolution, resolution, cand), np.inf, np.float32)
-    cuvs = np.zeros((resolution, resolution, cand, 2), np.float32)
-    facing = np.zeros((resolution, resolution, cand), np.int8)
-    mixed = np.zeros((resolution, resolution, cand), np.bool_)
+    zs = np.full((resolution, resolution, cand + 1), np.inf, np.float32)
+    cface = np.full((resolution, resolution, cand + 1), -1, np.int32)
+    cbary = np.zeros((resolution, resolution, cand + 1, 2), np.float32)
+    facing = np.zeros((resolution, resolution, cand + 1), np.int8)
+    mixed = np.zeros((resolution, resolution, cand + 1), np.bool_)
     count = np.zeros((resolution, resolution), np.int32)
     for t in range(tris.shape[0]):
         ax, ay, az = tris[t, 0]
         bx, by, bz = tris[t, 1]
         cx, cy, cz = tris[t, 2]
-        au, av = tri_uv[t, 0]
-        bu, bv = tri_uv[t, 1]
-        cu, cv = tri_uv[t, 2]
         area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
         if abs(area) < 1e-12:
             continue  # triângulo de lado (paralelo ao raio)
@@ -66,39 +101,66 @@ def _raster_axis(tris, tri_uv, resolution, max_hits):
                 if merged:
                     continue
 
-                # Inserção ordenada nos cand slots; cheio, o mais distante sai.
-                if n == cand and z >= zs[y, x, cand - 1]:
-                    continue
-                k = min(n, cand - 1)
+                # Inserção ordenada (há sempre um slot livre: n <= cand).
+                k = n
                 while k > 0 and zs[y, x, k - 1] > z:
                     zs[y, x, k] = zs[y, x, k - 1]
-                    cuvs[y, x, k] = cuvs[y, x, k - 1]
+                    cface[y, x, k] = cface[y, x, k - 1]
+                    cbary[y, x, k] = cbary[y, x, k - 1]
                     facing[y, x, k] = facing[y, x, k - 1]
                     mixed[y, x, k] = mixed[y, x, k - 1]
                     k -= 1
                 zs[y, x, k] = z
-                # Projeção ortográfica: interpolação afim do UV é exata.
-                cuvs[y, x, k, 0] = l0 * au + l1 * bu + l2 * cu
-                cuvs[y, x, k, 1] = l0 * av + l1 * bv + l2 * cv
+                cface[y, x, k] = t
+                cbary[y, x, k, 0] = l0
+                cbary[y, x, k, 1] = l1
                 facing[y, x, k] = f
                 mixed[y, x, k] = False
-                count[y, x] = min(n + 1, cand)
+                n += 1
 
-    # Descarta os hits rasantes e fica com os max_hits mais próximos.
+                if n > cand:
+                    # Um hit rasante vale um par de paridade nula: tirá-lo mantém a paridade.
+                    dropped = False
+                    for i in range(n):
+                        if mixed[y, x, i]:
+                            n = _remove(zs[y, x], cface[y, x], cbary[y, x], facing[y, x],
+                                        mixed[y, x], n, i, 1)
+                            dropped = True
+                            break
+                    if not dropped:
+                        n = _fill_thinnest_gap(zs[y, x], cface[y, x], cbary[y, x],
+                                               facing[y, x], mixed[y, x], n)
+                count[y, x] = n
+
+    # Descarta os hits rasantes e reduz cada raio a max_hits preenchendo os vãos mais finos.
     layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
-    uvs = np.zeros((resolution, resolution, max_hits, 2), np.float32)
+    faces = np.full((resolution, resolution, max_hits), -1, np.int32)
+    facings = np.zeros((resolution, resolution, max_hits), np.int8)
+    bary = np.zeros((resolution, resolution, max_hits, 2), np.float32)
     for y in range(resolution):
         for x in range(resolution):
-            k = 0
+            n = 0
             for i in range(count[y, x]):
                 if mixed[y, x, i]:
                     continue
-                if k == max_hits:
+                zs[y, x, n] = zs[y, x, i]
+                cface[y, x, n] = cface[y, x, i]
+                cbary[y, x, n] = cbary[y, x, i]
+                facing[y, x, n] = facing[y, x, i]
+                n += 1
+            while n > max_hits:
+                reduced = _fill_thinnest_gap(zs[y, x], cface[y, x], cbary[y, x],
+                                             facing[y, x], mixed[y, x], n)
+                if reduced == n:  # sem vão para preencher (max_hits < 2): corta
+                    n = max_hits
                     break
-                layers[y, x, k] = zs[y, x, i]
-                uvs[y, x, k] = cuvs[y, x, i]
-                k += 1
-    return layers, uvs
+                n = reduced
+            for k in range(n):
+                layers[y, x, k] = zs[y, x, k]
+                faces[y, x, k] = cface[y, x, k]
+                facings[y, x, k] = facing[y, x, k]
+                bary[y, x, k] = cbary[y, x, k]
+    return layers, faces, facings, bary
 
 
 def _sample(tex, uvs, valid):
@@ -137,7 +199,8 @@ def bake(mesh: Mesh, resolution, max_hits):
     p = mesh.pos - center
 
     # Uma entrada por eixo: {"depth": (res, res, max_hits) float32,
-    #                       "albedo"/"normal": (res, res, max_hits, 4) uint8 ou None}
+    #                       "albedo": (res, res, max_hits, 4) uint8 ou None,
+    #                       "normal": (res, res, max_hits, 4) uint8}
     result = []
 
     for axis in range(3):
@@ -146,8 +209,10 @@ def bake(mesh: Mesh, resolution, max_hits):
         # Guard against degenerated meshes (plane mesh in this axis)
         if half[u] <= 0 or half[v] <= 0:
             layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
-            uvs = np.zeros((resolution, resolution, max_hits, 2), np.float32)
-            result.append(_axis_result(mesh, layers, uvs))
+            faces = np.full((resolution, resolution, max_hits), -1, np.int32)
+            facings = np.zeros((resolution, resolution, max_hits), np.int8)
+            bary = np.zeros((resolution, resolution, max_hits, 2), np.float32)
+            result.append(_axis_result(mesh, axis, layers, faces, facings, bary))
             continue
 
         # Coordinate transformations for x, y and z:
@@ -162,24 +227,43 @@ def bake(mesh: Mesh, resolution, max_hits):
         tris = np.stack([tx, ty, z], axis=1).reshape(
             -1, 3, 3
         )  # (T, 3 vértices, [x, y, z]); muda por eixo
-        tri_uv = mesh.uv.reshape(-1, 3, 2)  # textura, igual para os 3 eixos
 
         # As MAX_HITS camadas mais próximas por texel, ordenadas. Texel vazio = inf.
-        layers, uvs = _raster_axis(
-            np.ascontiguousarray(tris, dtype=np.float64),
-            np.ascontiguousarray(tri_uv, dtype=np.float64),
-            resolution,
-            max_hits,
+        layers, faces, facings, bary = _raster_axis(
+            np.ascontiguousarray(tris, dtype=np.float64), resolution, max_hits
         )
-        result.append(_axis_result(mesh, layers, uvs))
+        result.append(_axis_result(mesh, axis, layers, faces, facings, bary))
 
     return result
 
 
-def _axis_result(mesh: Mesh, layers, uvs):
-    valid = np.isfinite(layers)
+def _axis_result(mesh: Mesh, axis, layers, faces, facings, bary):
+    """Interpola, em cada hit, os atributos dos cantos do triângulo atingido: o UV (para
+    amostrar o albedo) e a normal suave da malha, codificada em RGBA 8-bit como n * 0.5 + 0.5
+    no espaço do objeto (alpha 0 = sem hit)."""
+    valid = faces >= 0
+    f = np.where(valid, faces, 0)
+    b0, b1 = bary[..., 0], bary[..., 1]
+    w = np.stack([b0, b1, 1.0 - b0 - b1], axis=-1)[..., None]  # (res, res, hits, 3, 1)
+
+    # Projeção ortográfica: interpolação afim dos atributos é exata.
+    uvs = (mesh.uv.reshape(-1, 3, 2)[f] * w).sum(axis=-2)
+    nrm = (mesh.nrm.reshape(-1, 3, 3)[f] * w).sum(axis=-2)
+
+    # Normal degenerada (cantos com normais opostas): usa a direção do eixo para o lado
+    # para onde a face aponta.
+    length = np.linalg.norm(nrm, axis=-1, keepdims=True)
+    fallback = np.zeros_like(nrm)
+    fallback[..., axis] = facings
+    nrm = np.where(length > 1e-12, nrm / np.maximum(length, 1e-12), fallback)
+
+    normal = np.zeros((*faces.shape, 4), np.uint8)
+    normal[..., :3] = np.rint((nrm * 0.5 + 0.5) * 255.0).astype(np.uint8)
+    normal[..., 3] = 255
+    normal[~valid] = 0
+
     return {
         "depth": layers,
         "albedo": None if mesh.albedo is None else _sample(mesh.albedo, uvs, valid),
-        "normal": None if mesh.normal is None else _sample(mesh.normal, uvs, valid),
+        "normal": normal,
     }

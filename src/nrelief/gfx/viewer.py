@@ -93,6 +93,16 @@ class Viewer(spy.AppWindow):
             usage=spy.TextureUsage.shader_resource,
         )
 
+        # Normais: dado linear, não sRGB.
+        self.normal_maps: spy.Texture = self.device.create_texture(
+            type=spy.TextureType.texture_2d_array,
+            format=spy.Format.rgba8_unorm,
+            height=1024,
+            width=1024,
+            array_length=12,
+            usage=spy.TextureUsage.shader_resource,
+        )
+
         for i in range(3):
             self.depth_maps.copy_from_numpy(relief_textures_data[i]["depth"], layer=i)
 
@@ -103,6 +113,12 @@ class Viewer(spy.AppWindow):
                     self.color_maps.copy_from_numpy(
                         np.ascontiguousarray(albedo[:, :, k]), layer=i * 4 + k
                     )
+
+            normal = relief_textures_data[i]["normal"]
+            for k in range(normal.shape[2]):
+                self.normal_maps.copy_from_numpy(
+                    np.ascontiguousarray(normal[:, :, k]), layer=i * 4 + k
+                )
 
         # Vertices stay in object space (the mesh's own coordinates); model places the object in
         # the world. Identity for now: object space == world space.
@@ -243,6 +259,7 @@ class Viewer(spy.AppWindow):
             cursor.linearSteps = RELIEF_LINEAR_STEPS
             cursor.depthMaps = self.depth_maps
             cursor.colorMaps = self.color_maps
+            cursor.normalMaps = self.normal_maps
 
             rp.set_render_state(
                 {
