@@ -4,12 +4,27 @@ import numpy as np
 from .mesh import Mesh
 
 
+# Hits mais próximos que isso, em fração da espessura da caixa, são a mesma superfície
+# (triângulos que compartilham uma aresta) ou uma dobra de espessura zero.
+HIT_MERGE_EPS = 2e-4
+
+
 @nb.njit(cache=True)
 def _raster_axis(tris, tri_uv, resolution, max_hits):
     """Rasteriza os triângulos (T, 3, [x, y, z]) e guarda, por texel, os max_hits menores z
-    e o UV de textura interpolado de cada um desses hits."""
-    layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
-    uvs = np.zeros((resolution, resolution, max_hits, 2), np.float32)
+    e o UV de textura interpolado de cada um desses hits.
+
+    Hits na mesma profundidade (até HIT_MERGE_EPS) viram um só: se as faces apontam para o
+    mesmo lado, é a mesma superfície vista pelos dois triângulos de uma aresta; se apontam
+    para lados opostos, o raio só raspa o sólido (espessura zero) e o hit é descartado."""
+    # Candidatos por texel antes de descartar os hits rasantes, para que eles não tomem o
+    # lugar de superfícies reais entre os max_hits mais próximos.
+    cand = 2 * max_hits
+    zs = np.full((resolution, resolution, cand), np.inf, np.float32)
+    cuvs = np.zeros((resolution, resolution, cand, 2), np.float32)
+    facing = np.zeros((resolution, resolution, cand), np.int8)
+    mixed = np.zeros((resolution, resolution, cand), np.bool_)
+    count = np.zeros((resolution, resolution), np.int32)
     for t in range(tris.shape[0]):
         ax, ay, az = tris[t, 0]
         bx, by, bz = tris[t, 1]
@@ -20,6 +35,9 @@ def _raster_axis(tris, tri_uv, resolution, max_hits):
         area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
         if abs(area) < 1e-12:
             continue  # triângulo de lado (paralelo ao raio)
+        # (u, v, axis) é uma permutação cíclica de (x, y, z), então o sinal da área projetada
+        # é o sinal da normal da face ao longo do eixo: +1 se ela aponta para o lado positivo.
+        f = 1 if area > 0 else -1
 
         min_x = max(0, int(np.floor(min(ax, bx, cx))))
         max_x = min(resolution - 1, int(np.ceil(max(ax, bx, cx))))
@@ -36,18 +54,50 @@ def _raster_axis(tris, tri_uv, resolution, max_hits):
                     continue  # fora do triângulo
                 z = l0 * az + l1 * bz + l2 * cz
 
-                # Inserção ordenada nos max_hits slots.
-                k = max_hits - 1
-                if z >= layers[y, x, k]:
+                # Mesma profundidade de um hit já guardado: funde com ele.
+                n = count[y, x]
+                merged = False
+                for i in range(n):
+                    if abs(zs[y, x, i] - z) < HIT_MERGE_EPS:
+                        if facing[y, x, i] != f:
+                            mixed[y, x, i] = True
+                        merged = True
+                        break
+                if merged:
                     continue
-                while k > 0 and layers[y, x, k - 1] > z:
-                    layers[y, x, k] = layers[y, x, k - 1]
-                    uvs[y, x, k] = uvs[y, x, k - 1]
+
+                # Inserção ordenada nos cand slots; cheio, o mais distante sai.
+                if n == cand and z >= zs[y, x, cand - 1]:
+                    continue
+                k = min(n, cand - 1)
+                while k > 0 and zs[y, x, k - 1] > z:
+                    zs[y, x, k] = zs[y, x, k - 1]
+                    cuvs[y, x, k] = cuvs[y, x, k - 1]
+                    facing[y, x, k] = facing[y, x, k - 1]
+                    mixed[y, x, k] = mixed[y, x, k - 1]
                     k -= 1
-                layers[y, x, k] = z
+                zs[y, x, k] = z
                 # Projeção ortográfica: interpolação afim do UV é exata.
-                uvs[y, x, k, 0] = l0 * au + l1 * bu + l2 * cu
-                uvs[y, x, k, 1] = l0 * av + l1 * bv + l2 * cv
+                cuvs[y, x, k, 0] = l0 * au + l1 * bu + l2 * cu
+                cuvs[y, x, k, 1] = l0 * av + l1 * bv + l2 * cv
+                facing[y, x, k] = f
+                mixed[y, x, k] = False
+                count[y, x] = min(n + 1, cand)
+
+    # Descarta os hits rasantes e fica com os max_hits mais próximos.
+    layers = np.full((resolution, resolution, max_hits), np.inf, np.float32)
+    uvs = np.zeros((resolution, resolution, max_hits, 2), np.float32)
+    for y in range(resolution):
+        for x in range(resolution):
+            k = 0
+            for i in range(count[y, x]):
+                if mixed[y, x, i]:
+                    continue
+                if k == max_hits:
+                    break
+                layers[y, x, k] = zs[y, x, i]
+                uvs[y, x, k] = cuvs[y, x, i]
+                k += 1
     return layers, uvs
 
 
